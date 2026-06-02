@@ -68,25 +68,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') {
-          res.write('data: [DONE]\n\n');
-          continue;
-        }
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed.choices?.[0]?.delta?.content || '';
-          if (delta) {
-            res.write(`data: ${JSON.stringify({ delta })}\n\n`);
-          }
-        } catch {
-          // ignore malformed lines
-        }
+        if (!line.trim()) continue;
+        res.write(line + '\n\n');
       }
     }
 
-    res.write('data: {"done":true}\n\n');
     res.end();
   } catch (err: any) {
     return res.status(500).json({ error: err.message || 'Unknown error' });
