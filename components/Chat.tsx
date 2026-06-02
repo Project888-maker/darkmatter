@@ -13,7 +13,11 @@ const MODEL_KEY = 'vercel-chat-model-v1';
 const SYS_KEY = 'vercel-chat-system-v1';
 
 const MODELS = [
-  { value: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', label: 'Dolphin Mistral 24B Venice (Free)' },
+  { value: 'sao10k/l3.3-lunaris-8b', label: '🟢 Lunaris 8B (Uncensored, $0.04/M)' },
+  { value: 'sao10k/l3-euryale-70b', label: '🟢 Euryale 70B (Uncensored, $0.30/M)' },
+  { value: 'thedrummer/cydonia-24b-v4.1', label: '🟢 Cydonia 24B v4.1 (Uncensored, RP)' },
+  { value: 'nousresearch/hermes-4-405b', label: '🟢 Hermes 4 405B (Zero Refusal)' },
+  { value: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', label: '🐬 Dolphin Venice 24B (Free — Rate Limited)' },
   { value: 'google/gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
   { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
   { value: 'z-ai/glm-4.5-air:free', label: 'Z-AI GLM-4.5 Air (Free)' },
