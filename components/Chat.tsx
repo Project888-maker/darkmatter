@@ -41,6 +41,7 @@ export default function Chat() {
   const [model, setModel] = useState(MODELS[0].value);
   const [systemPrompt, setSystemPrompt] = useState('');
   const [showSystem, setShowSystem] = useState(false);
+  const [retryCountdown, setRetryCountdown] = useState<number | null>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -88,6 +89,8 @@ export default function Chat() {
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, []);
 
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
   const sendMessage = async () => {
     const text = input.trim();
     if (!text || isGenerating) return;
@@ -107,96 +110,134 @@ export default function Chat() {
 
     abortRef.current = new AbortController();
     let assistantText = '';
+    const MAX_RETRIES = 3;
 
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: apiMessages,
-          model,
-          temperature: 0.7,
-          max_tokens: 4096,
-        }),
-        signal: abortRef.current.signal,
-      });
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-        const errorMsg: Message = { role: 'system', content: `Error: ${err.error || err.message || 'Unknown error'}`, createdAt: Date.now() };
-        setMessages(prev => [...prev, errorMsg]);
-        return;
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) {
-        setMessages(prev => [...prev, { role: 'system', content: 'Error: No response body', createdAt: Date.now() }]);
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content || '';
-            if (delta) {
-              assistantText += delta;
-              setMessages(prev => {
-                const last = prev[prev.length - 1];
-                if (last && last.role === 'assistant') {
-                  return [...prev.slice(0, -1), { ...last, content: assistantText }];
-                }
-                return [...prev, { role: 'assistant', content: assistantText, createdAt: Date.now() }];
-              });
-            }
-          } catch {
-            // ignore malformed SSE lines
-          }
-        }
-      }
-
-      // flush remaining
-      if (buffer.startsWith('data: ')) {
-        const data = buffer.slice(6);
-        if (data && data !== '[DONE]') {
-          try {
-            const parsed = JSON.parse(data);
-            const delta = parsed.choices?.[0]?.delta?.content || '';
-            if (delta) assistantText += delta;
-          } catch {}
-        }
-      }
-      if (assistantText) {
-        setMessages(prev => {
-          const last = prev[prev.length - 1];
-          if (last && last.role === 'assistant') {
-            return [...prev.slice(0, -1), { ...last, content: assistantText }];
-          }
-          return [...prev, { role: 'assistant', content: assistantText, createdAt: Date.now() }];
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: apiMessages,
+            model,
+            temperature: 0.7,
+            max_tokens: 4096,
+          }),
+          signal: abortRef.current.signal,
         });
+
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+          let retrySec = 2;
+
+          // Parse OpenRouter 429 error for retry-after
+          if (res.status === 429) {
+            try {
+              const inner = JSON.parse(errBody.error);
+              const raw = inner.error?.metadata?.retry_after_seconds;
+              if (typeof raw === 'number') retrySec = Math.ceil(raw);
+            } catch {}
+
+            if (attempt < MAX_RETRIES) {
+              setMessages(prev => [...prev, {
+                role: 'system',
+                content: `⏳ Rate limited by OpenRouter. Retrying in ${retrySec}s... (attempt ${attempt}/${MAX_RETRIES})`,
+                createdAt: Date.now(),
+              }]);
+              setRetryCountdown(retrySec);
+              for (let i = retrySec; i > 0; i--) {
+                setRetryCountdown(i);
+                await sleep(1000);
+              }
+              setRetryCountdown(null);
+              continue; // retry
+            }
+          }
+
+          const errorMsg: Message = {
+            role: 'system',
+            content: `Error: ${errBody.error || errBody.message || 'Unknown error'}`,
+            createdAt: Date.now(),
+          };
+          setMessages(prev => [...prev, errorMsg]);
+          break;
+        }
+
+        const reader = res.body?.getReader();
+        if (!reader) {
+          setMessages(prev => [...prev, { role: 'system', content: 'Error: No response body', createdAt: Date.now() }]);
+          break;
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta?.content || '';
+              if (delta) {
+                assistantText += delta;
+                setMessages(prev => {
+                  const last = prev[prev.length - 1];
+                  if (last && last.role === 'assistant') {
+                    return [...prev.slice(0, -1), { ...last, content: assistantText }];
+                  }
+                  return [...prev, { role: 'assistant', content: assistantText, createdAt: Date.now() }];
+                });
+              }
+            } catch {
+              // ignore malformed SSE lines
+            }
+          }
+        }
+
+        // flush remaining
+        if (buffer.startsWith('data: ')) {
+          const data = buffer.slice(6);
+          if (data && data !== '[DONE]') {
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices?.[0]?.delta?.content || '';
+              if (delta) assistantText += delta;
+            } catch {}
+          }
+        }
+        if (assistantText) {
+          setMessages(prev => {
+            const last = prev[prev.length - 1];
+            if (last && last.role === 'assistant') {
+              return [...prev.slice(0, -1), { ...last, content: assistantText }];
+            }
+            return [...prev, { role: 'assistant', content: assistantText, createdAt: Date.now() }];
+          });
+        }
+        break; // success, exit retry loop
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          setMessages(prev => [...prev, { role: 'system', content: 'Cancelled', createdAt: Date.now() }]);
+          break;
+        }
+        if (attempt === MAX_RETRIES) {
+          setMessages(prev => [...prev, { role: 'system', content: `Error: ${err.message}`, createdAt: Date.now() }]);
+        }
+        break;
       }
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        setMessages(prev => [...prev, { role: 'system', content: 'Cancelled', createdAt: Date.now() }]);
-      } else {
-        setMessages(prev => [...prev, { role: 'system', content: `Error: ${err.message}`, createdAt: Date.now() }]);
-      }
-    } finally {
-      setIsGenerating(false);
-      abortRef.current = null;
     }
+
+    setIsGenerating(false);
+    setRetryCountdown(null);
+    abortRef.current = null;
   };
 
   const clearChat = () => {
@@ -309,7 +350,7 @@ export default function Chat() {
           disabled={isGenerating}
         />
         <button style={styles.btn} onClick={sendMessage} disabled={isGenerating || !input.trim()}>
-          {isGenerating ? '...' : 'Send'}
+          {retryCountdown !== null ? `Retry in ${retryCountdown}s` : isGenerating ? '...' : 'Send'}
         </button>
       </div>
 

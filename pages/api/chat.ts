@@ -39,7 +39,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (!upstream.ok) {
       const errText = await upstream.text();
-      return res.status(upstream.status).json({ error: errText });
+      let retryAfter = upstream.headers.get('retry-after') || '';
+      try {
+        const parsed = JSON.parse(errText);
+        const rawRetry = parsed.error?.metadata?.retry_after_seconds;
+        if (typeof rawRetry === 'number') retryAfter = String(Math.ceil(rawRetry));
+      } catch {}
+      return res.status(upstream.status).json({ error: errText, retryAfter });
     }
 
     res.setHeader('Content-Type', 'text/event-stream');
